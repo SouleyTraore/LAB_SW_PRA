@@ -1,0 +1,111 @@
+# Fournisseur Scaleway
+provider "scaleway" {
+  access_key = var.scaleway_access_key
+  secret_key = var.scaleway_secret_key
+  organization_id = var.scaleway_organization_id
+  region = "fr-par"
+  zone = "fr-par-1"
+}
+
+# Variables d'entrée
+variable "scaleway_access_key" {}
+variable "scaleway_secret_key" {}
+variable "scaleway_organization_id" {}
+variable "instance_type" {
+  default = "DEV1-S"
+}
+variable "image" {
+  default = "ubuntu_focal"
+}
+
+# Créer les deux instances Ubuntu
+resource "scaleway_instance_server" "web" {
+  count  = 2
+  name   = "web-${count.index + 1}"
+  type   = var.instance_type
+  image  = var.image
+  tags   = ["web"]
+
+  root_volume {
+    size = 20
+  }
+}
+
+# Créer une IP publique pour chaque instance
+resource "scaleway_instance_ip" "web_ip" {
+  count   = 2
+  server  = element(scaleway_instance_server.web.*.id, count.index)
+}
+
+# Créer un load balancer
+resource "scaleway_lb" "web_lb" {
+  name     = "web-lb"
+  type     = "lb-s"
+  ip_id    = scaleway_lb_ip.web_lb_ip.id
+  tags     = ["web-lb"]
+}
+
+# Assigner une IP publique au load balancer
+resource "scaleway_lb_ip" "web_lb_ip" {
+  load_balancer_id = scaleway_lb.web_lb.id
+}
+
+# Créer une configuration de frontend pour le load balancer
+resource "scaleway_lb_frontend" "web_lb_frontend" {
+  load_balancer_id = scaleway_lb.web_lb.id
+  name             = "web-lb-frontend"
+  inbound_port     = 80
+  backend_id       = scaleway_lb_backend.web_lb_backend.id
+}
+
+# Créer une configuration de backend pour le load balancer
+resource "scaleway_lb_backend" "web_lb_backend" {
+  load_balancer_id = scaleway_lb.web_lb.id
+  name             = "web-lb-backend"
+  forward_protocol = "tcp"
+
+  # Ajouter les instances au backend
+  server_ip {
+    ip_id = element(scaleway_instance_ip.web_ip.*.id, count.index)
+  }
+}
+
+# Créer une fonction serverless
+resource "scaleway_function_namespace" "my_namespace" {
+  name = "my-namespace"
+  environment {
+    key   = "ENV_VAR"
+    value = "production"
+  }
+}
+
+resource "scaleway_function" "my_function" {
+  namespace_id = scaleway_function_namespace.my_namespace.id
+  name         = "my-function"
+  runtime      = "python3.9"
+  handler      = "index.handler"
+  memory_limit = 128
+  min_scale    = 0
+  max_scale    = 1
+
+  # Ajouter le code source de la fonction
+  source {
+    inline_code = <<EOF
+def handler(event, context):
+    return {
+        "statusCode": 200,
+        "body": "Hello, World!"
+    }
+EOF
+  }
+}
+
+output "web_lb_ip" {
+  description = "IP address of the Load Balancer"
+  value       = scaleway_lb_ip.web_lb_ip.address
+}
+
+output "function_url" {
+  description = "URL of the serverless function"
+  value       = scaleway_function.my_function.http_endpoint
+}
